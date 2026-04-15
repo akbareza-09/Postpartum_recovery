@@ -103,6 +103,15 @@
 </head>
 <body class="bg-sage-50 text-slate-800 min-h-screen">
 
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-sage-50 z-[100] flex flex-col items-center justify-center transition-opacity duration-500">
+        <svg class="animate-spin h-10 w-10 text-sage-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p class="text-sage-700 font-medium">Loading your progress...</p>
+    </div>
+
     <!-- Header -->
     <header class="bg-white shadow-sm sticky top-0 z-10">
         <div class="max-w-3xl mx-auto px-4 py-5 sm:px-6 flex justify-between items-center">
@@ -112,7 +121,7 @@
                 </div>
                 <h1 class="text-xl sm:text-2xl font-bold text-slate-800">Core Recovery</h1>
             </div>
-            <button onclick="showInfoModal()" class="text-sage-500 hover:text-sage-700 p-2 rounded-full hover:bg-sage-50 transition">
+            <button onclick="window.showInfoModal()" class="text-sage-500 hover:text-sage-700 p-2 rounded-full hover:bg-sage-50 transition">
                 <i data-lucide="info"></i>
             </button>
         </div>
@@ -174,7 +183,7 @@
         <div class="bg-white rounded-2xl max-w-md w-full p-6 transform scale-95 transition-transform duration-300" id="info-modal-content">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-xl font-bold flex items-center gap-2"><i data-lucide="alert-triangle" class="text-amber-500"></i> Safety First</h3>
-                <button onclick="hideInfoModal()" class="text-slate-400 hover:text-slate-600"><i data-lucide="x"></i></button>
+                <button onclick="window.hideInfoModal()" class="text-slate-400 hover:text-slate-600"><i data-lucide="x"></i></button>
             </div>
             <div class="text-slate-600 space-y-4 text-sm">
                 <p><strong>Always consult your healthcare provider</strong> before beginning any exercise program postpartum.</p>
@@ -187,11 +196,38 @@
                 </ul>
                 <p class="mt-4 italic text-xs text-slate-400">This app is for educational purposes and does not replace medical advice.</p>
             </div>
-            <button onclick="hideInfoModal()" class="mt-6 w-full bg-sage-600 text-white py-3 rounded-xl font-medium hover:bg-sage-700 transition">I Understand</button>
+            <button onclick="window.hideInfoModal()" class="mt-6 w-full bg-sage-600 text-white py-3 rounded-xl font-medium hover:bg-sage-700 transition">I Understand</button>
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Configuration ---
+        let firebaseConfig;
+        if (typeof __firebase_config !== 'undefined') {
+            firebaseConfig = JSON.parse(__firebase_config);
+        } else {
+            // Your live GitHub Pages Firebase config
+            firebaseConfig = {
+                apiKey: "AIzaSyCi2RQPcMT2NfU9Mw0HsxzJawd1tx8G27w",
+                authDomain: "postpartum-recovery-cd208.firebaseapp.com",
+                projectId: "postpartum-recovery-cd208",
+                storageBucket: "postpartum-recovery-cd208.firebasestorage.app",
+                messagingSenderId: "955041255683",
+                appId: "1:955041255683:web:dc16e03a7a0df216791936",
+                measurementId: "G-EKNS33KQRR"
+            };
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'postpartum-recovery';
+        let currentUser = null;
+
         // --- SVG Asset Strings ---
         const svgBreathing = `<svg viewBox="0 0 100 100" class="w-full h-full text-sage-600" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <!-- Torso -->
@@ -429,13 +465,82 @@
 
         let currentDayIndex = 0;
 
+        // --- Cloud Storage Logic ---
+        
+        async function saveProgressToCloud() {
+            if (!currentUser) return;
+            
+            // Gather all completed exercise IDs
+            const completedIds = [];
+            programData.forEach(day => {
+                day.routine.forEach(ex => {
+                    if (ex.done) completedIds.push(ex.id);
+                });
+            });
+            
+            try {
+                // Save privately using anonymous user ID
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'progress', 'savedState');
+                await setDoc(docRef, { 
+                    completedExercises: completedIds,
+                    lastActiveDay: currentDayIndex
+                });
+            } catch (e) {
+                console.error("Error saving progress to cloud:", e);
+            }
+        }
+
+        async function loadProgressFromCloud(user) {
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'progress', 'savedState');
+                const docSnap = await getDoc(docRef);
+                
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const completedIds = data.completedExercises || [];
+                    
+                    // Resume on the last day they were viewing
+                    if (data.lastActiveDay !== undefined) {
+                        currentDayIndex = data.lastActiveDay;
+                    }
+                    
+                    // Apply completed status back into memory
+                    programData.forEach(day => {
+                        day.routine.forEach(ex => {
+                            ex.done = completedIds.includes(ex.id);
+                        });
+                    });
+                }
+            } catch (e) {
+                console.error("Error loading progress from cloud:", e);
+            }
+        }
+
         // --- Application Logic ---
 
         function initApp() {
             lucide.createIcons();
             renderDaySelector();
-            loadDay(0);
+            window.loadDay(currentDayIndex, false); // Load day without re-saving instantly
+            
+            // Hide loading overlay gracefully
+            const loader = document.getElementById('loading-overlay');
+            loader.style.opacity = '0';
+            setTimeout(() => loader.classList.add('hidden'), 500);
         }
+
+        window.loadDay = function(index, triggerSave = true) {
+            currentDayIndex = index;
+            renderDaySelector(); 
+            
+            const dayData = programData[index];
+            document.getElementById('current-day-title').innerText = `Day ${dayData.id}: ${dayData.title}`;
+            
+            renderExercises(dayData);
+            updateProgress();
+            
+            if (triggerSave) saveProgressToCloud();
+        };
 
         function renderDaySelector() {
             const container = document.getElementById('day-selector');
@@ -453,26 +558,15 @@
                                 '<span class="text-xs font-semibold uppercase opacity-80">Day</span>' +
                                 '<span class="text-xl font-bold">' + day.id + '</span>';
                 
-                btn.onclick = () => loadDay(index);
+                // Hook to window function
+                btn.onclick = () => window.loadDay(index);
                 container.appendChild(btn);
             });
             
-            // Auto-scroll the selector to ensure the active day is visible
             const selectedBtn = container.children[currentDayIndex];
             if(selectedBtn) {
                  selectedBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
             }
-        }
-
-        function loadDay(index) {
-            currentDayIndex = index;
-            renderDaySelector(); // Update active state on buttons
-            
-            const dayData = programData[index];
-            document.getElementById('current-day-title').innerText = `Day ${dayData.id}: ${dayData.title}`;
-            
-            renderExercises(dayData);
-            updateProgress();
         }
 
         function renderExercises(dayData) {
@@ -489,7 +583,7 @@
                     <div class="pt-1">
                         <input type="checkbox" class="checkbox-custom" 
                                ${isDone ? 'checked' : ''} 
-                               onchange="toggleExercise('${exercise.id}')"
+                               onchange="window.toggleExercise('${exercise.id}')"
                                id="check-${exercise.id}">
                     </div>
                     <div class="flex-1">
@@ -528,20 +622,21 @@
                 container.appendChild(card);
             });
             
-            // Re-initialize icons for newly added HTML
             lucide.createIcons();
         }
 
-        function toggleExercise(exerciseId) {
+        window.toggleExercise = function(exerciseId) {
             const dayData = programData[currentDayIndex];
             const exercise = dayData.routine.find(e => e.id === exerciseId);
             
             if (exercise) {
                 exercise.done = !exercise.done;
-                renderExercises(dayData); // Re-render to apply completed styles
+                renderExercises(dayData);
                 updateProgress();
+                
+                saveProgressToCloud();
             }
-        }
+        };
 
         function updateProgress() {
             const dayData = programData[currentDayIndex];
@@ -574,30 +669,51 @@
         }
 
         // --- Modal Logic ---
-        function showInfoModal() {
+        window.showInfoModal = function() {
             const modal = document.getElementById('info-modal');
             const content = document.getElementById('info-modal-content');
             modal.classList.remove('hidden');
-            // Animate in
             setTimeout(() => {
                 modal.classList.remove('opacity-0');
                 content.classList.remove('scale-95');
             }, 10);
-        }
+        };
 
-        function hideInfoModal() {
+        window.hideInfoModal = function() {
             const modal = document.getElementById('info-modal');
             const content = document.getElementById('info-modal-content');
-            // Animate out
             modal.classList.add('opacity-0');
             content.classList.add('scale-95');
             setTimeout(() => {
                 modal.classList.add('hidden');
             }, 300);
-        }
+        };
 
-        // Run on load
-        window.addEventListener('DOMContentLoaded', initApp);
+        // --- Authentication & Startup ---
+        const startAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    // Sign in anonymously to secure the user's data
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth failed, starting app in offline mode:", error);
+                initApp(); 
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                await loadProgressFromCloud(user);
+                initApp();
+            }
+        });
+
+        // Begin startup sequence
+        startAuth();
 
     </script>
 </body>
